@@ -3,6 +3,7 @@
  * Plugin Name: Auto Linker
  * Description: Automatically links configured terms in completed Gutenberg paragraphs through a PHP-only Gutenberg RTC bot.
  * Version: 0.1.0
+ * Requires Plugins: gutenberg
  * Author: Alex Kirk
  * Text Domain: auto-linker
  *

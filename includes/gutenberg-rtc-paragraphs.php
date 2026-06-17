@@ -384,7 +384,7 @@ function gutenberg_rtc_apply_decoded_update_to_paragraph_state( array &$state, a
 			is_array( $block ) &&
 			isset( $block['name'], $block['id'] ) &&
 			'core/paragraph' === $block['name'] &&
-			gutenberg_rtc_text_ends_with_delimiter( (string) ( $block['content'] ?? '' ) )
+			gutenberg_rtc_text_contains_delimiter( (string) ( $block['content'] ?? '' ) )
 		) {
 			$events[] = new Gutenberg_RTC_Completed_Paragraph(
 				$block_id,
@@ -524,14 +524,14 @@ function gutenberg_rtc_note_text_item( array &$state, array $struct, string $id 
 }
 
 /**
- * Checks whether text ends in a word-delimiting character.
+ * Checks whether text contains a word-delimiting character.
  */
-function gutenberg_rtc_text_ends_with_delimiter( string $text ): bool {
+function gutenberg_rtc_text_contains_delimiter( string $text ): bool {
 	if ( '' === $text ) {
 		return false;
 	}
 
-	return (bool) preg_match( '/[^\p{L}\p{N}_]$/u', $text );
+	return (bool) preg_match( '/[^\p{L}\p{N}_]/u', $text );
 }
 
 /**
