@@ -5271,6 +5271,79 @@ final class YDocMutationTest extends TestCase
         self::assertSame($source->encodeStateVector(), $target->encodeStateVector());
     }
 
+    public function testDebugStructResolvesInteriorItemIds(): void
+    {
+        $doc = new YDoc();
+        $doc->applyUpdateV1(DecodedUpdate::encodeV1([
+            [
+                'type' => 'Item',
+                'id' => ['client' => 900, 'clock' => 0],
+                'length' => 5,
+                'origin' => null,
+                'rightOrigin' => null,
+                'parent' => 'content',
+                'parentSub' => null,
+                'content' => [
+                    'type' => 'ContentString',
+                    'value' => 'Hello',
+                ],
+            ],
+        ]));
+
+        self::assertSame(['content' => 'Hello'], $doc->toJSON());
+
+        $debug = $doc->debugStruct('900:3');
+
+        self::assertTrue($debug['found']);
+        self::assertFalse($debug['exact']);
+        self::assertSame('900:0', $debug['struct_id']);
+        self::assertSame(5, $debug['length']);
+        self::assertSame('ContentString', $debug['content_type']);
+    }
+
+    public function testDebugStructStopsAtCyclicNestedParents(): void
+    {
+        $doc = new YDoc();
+        $doc->applyUpdateV1(DecodedUpdate::encodeV1([
+            [
+                'type' => 'Item',
+                'id' => ['client' => 901, 'clock' => 0],
+                'length' => 1,
+                'origin' => ['client' => 901, 'clock' => 1],
+                'rightOrigin' => null,
+                'parent' => null,
+                'parentSub' => null,
+                'content' => [
+                    'type' => 'ContentType',
+                    'typeRef' => 1,
+                    'typeName' => 'YMap',
+                ],
+            ],
+            [
+                'type' => 'Item',
+                'id' => ['client' => 901, 'clock' => 1],
+                'length' => 1,
+                'origin' => ['client' => 901, 'clock' => 1],
+                'rightOrigin' => null,
+                'parent' => null,
+                'parentSub' => null,
+                'content' => [
+                    'type' => 'ContentType',
+                    'typeRef' => 1,
+                    'typeName' => 'YMap',
+                ],
+            ],
+        ]));
+
+        $debug = $doc->debugStruct('901:0');
+
+        self::assertTrue($debug['found']);
+        self::assertSame('901:0', $debug['struct_id']);
+        self::assertSame('ContentType', $debug['content_type']);
+        self::assertSame('YMap', $debug['type_name']);
+        self::assertNull($debug['location']);
+    }
+
     public function testCanUnobserveTransactionObserver(): void
     {
         $doc = new YDoc(145);

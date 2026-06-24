@@ -19,6 +19,12 @@ final class YDoc
     private array $rootTextAttributesByName = [];
     /** @var array<string, array<string, mixed>> */
     private array $structsById = [];
+    /** @var array<string, array<string, mixed>|false> */
+    private array $structContainingIdCache = [];
+    /** @var array<int, list<array{clock: int, end: int, struct: array<string, mixed>}>> */
+    private array $structRangesByClient = [];
+    /** @var array<string, array{root: string}|array{idKey: string}|null> */
+    private array $immediateNestedSharedTypeParentCache = [];
     /** @var array<int, list<array{clock: int, length: int}>> */
     private array $deleteSet = [];
     /** @var array<string, mixed> */
@@ -845,6 +851,7 @@ final class YDoc
                 $effectiveStructs[] = $segment;
             }
         }
+        $this->clearDerivedLookupCaches();
 
         foreach ($decoded['deleteSet'] as $client => $deletes) {
             foreach ($deletes as $delete) {
@@ -1370,6 +1377,7 @@ final class YDoc
         foreach ($this->structsForSnapshot($snapshot) as $struct) {
             $doc->structsById[self::idKey($struct['id'])] = $struct;
         }
+        $doc->clearDerivedLookupCaches();
 
         $doc->deleteSet = $snapshot->deleteSet();
         $doc->rematerialize();
@@ -3173,10 +3181,12 @@ final class YDoc
 
     public function nestedSharedType(string $idKey): YNestedArray|YNestedMap|YNestedText|YNestedXmlFragment|YXmlElement|YXmlText|YXmlHook|null
     {
-        $struct = $this->structsById[$idKey] ?? null;
+        $struct = $this->structsById[$idKey] ?? $this->structContainingId(self::idFromKey($idKey));
         if ($struct === null || $this->isStructDeleted($struct) || ($struct['content']['type'] ?? null) !== 'ContentType') {
             return null;
         }
+
+        $idKey = self::idKey($struct['id']);
 
         return match ($struct['content']['typeName'] ?? null) {
             'YArray' => new YNestedArray($this, $idKey, $this->nestedArrayValue($idKey)),
@@ -3188,6 +3198,54 @@ final class YDoc
             'YXmlHook' => new YXmlHook($this, $idKey, (string) ($struct['content']['hookName'] ?? '')),
             default => null,
         };
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function debugStruct(string $idKey): array
+    {
+        $id = self::idFromKey($idKey);
+        $exact = $this->structsById[$idKey] ?? null;
+        $struct = $exact ?? $this->structContainingId($id);
+
+        if ($struct === null) {
+            return [
+                'requested_id' => $idKey,
+                'found' => false,
+            ];
+        }
+
+        $structIdKey = self::idKey($struct['id']);
+        $content = is_array($struct['content'] ?? null) ? $struct['content'] : [];
+
+        return [
+            'requested_id' => $idKey,
+            'found' => true,
+            'exact' => $exact !== null,
+            'struct_id' => $structIdKey,
+            'length' => (int) ($struct['length'] ?? 0),
+            'deleted' => $this->isStructDeleted($struct),
+            'content_type' => $content['type'] ?? null,
+            'type_name' => $content['typeName'] ?? null,
+            'parent' => $this->debugStructReference($struct['parent'] ?? null),
+            'parent_sub' => $struct['parentSub'] ?? null,
+            'origin' => $this->debugStructReference($struct['origin'] ?? null),
+            'right_origin' => $this->debugStructReference($struct['rightOrigin'] ?? null),
+            'location' => ($content['type'] ?? null) === 'ContentType' ? $this->nestedSharedTypeLocation($structIdKey) : null,
+            'nested_text_preview' => ($content['type'] ?? null) === 'ContentType' && ($content['typeName'] ?? null) === 'YText'
+                ? substr($this->nestedTextValue($structIdKey), 0, 160)
+                : null,
+        ];
+    }
+
+    private function debugStructReference(mixed $reference): string|array|null
+    {
+        if (is_array($reference) && isset($reference['client'], $reference['clock'])) {
+            return self::idKey($reference);
+        }
+
+        return is_string($reference) ? $reference : null;
     }
 
     /**
@@ -3490,6 +3548,7 @@ final class YDoc
         ];
 
         $this->structsById[self::idKey($struct['id'])] = $struct;
+        $this->clearDerivedLookupCaches();
         $before = $this->json;
         $beforeIdentity = $this->identityJson;
         $beforeNested = $this->nestedJsonById;
@@ -4988,18 +5047,53 @@ final class YDoc
             return $this->structsById[$key];
         }
 
-        foreach ($this->structsById as $struct) {
-            if (($struct['type'] ?? null) !== 'Item' || $struct['id']['client'] !== $id['client']) {
-                continue;
-            }
+        if (array_key_exists($key, $this->structContainingIdCache)) {
+            $cached = $this->structContainingIdCache[$key];
+            return is_array($cached) ? $cached : null;
+        }
 
-            $clock = $struct['id']['clock'];
-            if ($id['clock'] >= $clock && $id['clock'] < $clock + $struct['length']) {
-                return $struct;
+        $client = (int) $id['client'];
+        $clock = (int) $id['clock'];
+        foreach ($this->structRangesForClient($client) as $range) {
+            if ($clock >= $range['clock'] && $clock < $range['end']) {
+                $this->structContainingIdCache[$key] = $range['struct'];
+                return $range['struct'];
             }
         }
 
+        $this->structContainingIdCache[$key] = false;
         return null;
+    }
+
+    /**
+     * @return list<array{clock: int, end: int, struct: array<string, mixed>}>
+     */
+    private function structRangesForClient(int $client): array
+    {
+        if (array_key_exists($client, $this->structRangesByClient)) {
+            return $this->structRangesByClient[$client];
+        }
+
+        $ranges = [];
+        foreach ($this->structsById as $struct) {
+            if (($struct['type'] ?? null) !== 'Item' || (int) $struct['id']['client'] !== $client) {
+                continue;
+            }
+
+            $clock = (int) $struct['id']['clock'];
+            $ranges[] = [
+                'clock' => $clock,
+                'end' => $clock + (int) $struct['length'],
+                'struct' => $struct,
+            ];
+        }
+
+        usort(
+            $ranges,
+            static fn (array $left, array $right): int => $left['clock'] <=> $right['clock']
+        );
+
+        return $this->structRangesByClient[$client] = $ranges;
     }
 
     /**
@@ -6169,6 +6263,13 @@ final class YDoc
     private function isStructDeleted(array $struct): bool
     {
         return $this->deletedOffsets($struct, $this->deleteSet) !== [];
+    }
+
+    private function clearDerivedLookupCaches(): void
+    {
+        $this->structContainingIdCache = [];
+        $this->structRangesByClient = [];
+        $this->immediateNestedSharedTypeParentCache = [];
     }
 
     /**
@@ -8512,7 +8613,7 @@ final class YDoc
         }
 
         $parentSub = $this->storedStructParentSub($struct);
-        $parent = $this->immediateNestedSharedTypeParent($struct, $seen + [$structKey => true]);
+        $parent = $this->immediateNestedSharedTypeParent($struct, $seen);
         if ($parent === null) {
             return null;
         }
@@ -8554,14 +8655,25 @@ final class YDoc
      */
     private function immediateNestedSharedTypeParent(array $struct, array $seen): ?array
     {
+        $structKey = self::idKey($struct['id']);
+        if (isset($seen[$structKey])) {
+            return null;
+        }
+
+        if (array_key_exists($structKey, $this->immediateNestedSharedTypeParentCache)) {
+            return $this->immediateNestedSharedTypeParentCache[$structKey];
+        }
+
+        $seen[$structKey] = true;
+
         if (is_string($struct['parent'])) {
-            return ['root' => $struct['parent']];
+            return $this->immediateNestedSharedTypeParentCache[$structKey] = ['root' => $struct['parent']];
         }
 
         if (is_array($struct['parent'])) {
             $idKey = self::idKey($struct['parent']);
 
-            return isset($this->structsById[$idKey]) ? ['idKey' => $idKey] : null;
+            return $this->immediateNestedSharedTypeParentCache[$structKey] = isset($this->structsById[$idKey]) ? ['idKey' => $idKey] : null;
         }
 
         foreach (['origin', 'rightOrigin'] as $relation) {
@@ -8579,13 +8691,13 @@ final class YDoc
                 continue;
             }
 
-            $parent = $this->immediateNestedSharedTypeParent($parentStruct, $seen + [$parentKey => true]);
+            $parent = $this->immediateNestedSharedTypeParent($parentStruct, $seen);
             if ($parent !== null) {
-                return $parent;
+                return $this->immediateNestedSharedTypeParentCache[$structKey] = $parent;
             }
         }
 
-        return null;
+        return $this->immediateNestedSharedTypeParentCache[$structKey] = null;
     }
 
     private function nestedSharedTypeIndexInRootSequence(string $name, string $idKey): ?int
@@ -8743,10 +8855,16 @@ final class YDoc
     }
 
     /**
+     * @param array<string, true> $seen
      * @return array<string, string>
      */
-    private function nestedSharedTypeParentTypeNameEntries(string $idKey): array
+    private function nestedSharedTypeParentTypeNameEntries(string $idKey, array $seen = []): array
     {
+        if (isset($seen['nested:' . $idKey])) {
+            return [];
+        }
+        $seen['nested:' . $idKey] = true;
+
         $typeName = $this->nestedSequenceTypeName($idKey);
         $typeNames = is_string($typeName) ? ['nested:' . $idKey => $typeName] : [];
         $struct = $this->structsById[$idKey] ?? null;
@@ -8766,18 +8884,24 @@ final class YDoc
 
         if (isset($parent['idKey'])) {
             $typeNames += isset($this->xmlNodesById[$parent['idKey']])
-                ? $this->xmlNodeParentTypeNameEntries($parent['idKey'])
-                : $this->nestedSharedTypeParentTypeNameEntries($parent['idKey']);
+                ? $this->xmlNodeParentTypeNameEntries($parent['idKey'], $seen)
+                : $this->nestedSharedTypeParentTypeNameEntries($parent['idKey'], $seen);
         }
 
         return $typeNames;
     }
 
     /**
+     * @param array<string, true> $seen
      * @return array<string, string>
      */
-    private function xmlNodeParentTypeNameEntries(string $idKey): array
+    private function xmlNodeParentTypeNameEntries(string $idKey, array $seen = []): array
     {
+        if (isset($seen['xml:' . $idKey])) {
+            return [];
+        }
+        $seen['xml:' . $idKey] = true;
+
         $typeName = $this->xmlNodesById[$idKey]['typeName'] ?? null;
         $typeNames = is_string($typeName) ? ['xml:' . $idKey => $typeName] : [];
         $parent = $this->xmlNodeParentReference($idKey);
@@ -8789,7 +8913,7 @@ final class YDoc
         }
 
         if (isset($parent['idKey'])) {
-            $typeNames += $this->xmlNodeParentTypeNameEntries($parent['idKey']);
+            $typeNames += $this->xmlNodeParentTypeNameEntries($parent['idKey'], $seen);
 
             return $typeNames;
         }
@@ -8815,12 +8939,12 @@ final class YDoc
         }
 
         if (isset($this->xmlNodesById[$parentIdKey])) {
-            $typeNames += $this->xmlNodeParentTypeNameEntries($parentIdKey);
+            $typeNames += $this->xmlNodeParentTypeNameEntries($parentIdKey, $seen);
 
             return $typeNames;
         }
 
-        $typeNames += $this->nestedSharedTypeParentTypeNameEntries($parentIdKey);
+        $typeNames += $this->nestedSharedTypeParentTypeNameEntries($parentIdKey, $seen);
 
         return $typeNames;
     }
