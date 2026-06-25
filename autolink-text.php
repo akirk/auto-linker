@@ -115,7 +115,48 @@ function auto_linker_enqueue_settings_assets( string $hook_suffix ): void {
 	);
 	wp_add_inline_script(
 		'wp-color-picker',
-		'jQuery( function( $ ) { $( ".auto-linker-color-field" ).wpColorPicker(); } );'
+		'jQuery( function( $ ) {
+			function updatePreview( $row ) {
+				var color = $row.find( ".auto-linker-text-color-field" ).val();
+				var backgroundColor = $row.find( ".auto-linker-bg-color-field" ).val();
+				var isBold = $row.find( ".auto-linker-bold-field" ).is( ":checked" );
+				var $term = $row.find( ".auto-linker-term-field" );
+
+				$term.css( {
+					color: color || "",
+					backgroundColor: backgroundColor || "",
+					fontWeight: isBold ? "700" : ""
+				} );
+			}
+
+			$( ".auto-linker-color-field" ).wpColorPicker( {
+				change: function( event, ui ) {
+					var $field = $( event.target );
+					window.setTimeout( function() {
+						$field.val( ui.color ? ui.color.toString() : "" );
+						updatePreview( $field.closest( "tr" ) );
+					}, 0 );
+				},
+				clear: function( event ) {
+					var $field = $( event.target );
+					window.setTimeout( function() {
+						updatePreview( $field.closest( "tr" ) );
+					}, 0 );
+				}
+			} );
+
+			$( ".auto-linker-color-field" ).on( "input change", function() {
+				updatePreview( $( this ).closest( "tr" ) );
+			} );
+
+			$( ".auto-linker-bold-field" ).on( "change", function() {
+				updatePreview( $( this ).closest( "tr" ) );
+			} );
+
+			$( ".auto-linker-term-field" ).closest( "tr" ).each( function() {
+				updatePreview( $( this ) );
+			} );
+		} );'
 	);
 }
 
@@ -160,14 +201,18 @@ function auto_linker_render_terms_field(): void {
 		</thead>
 		<tbody>
 			<?php foreach ( $terms as $index => $term ) : ?>
+				<?php $term_style = auto_linker_build_link_style( (string) ( $term['color'] ?? '' ), (string) ( $term['bg_color'] ?? '' ), ! empty( $term['bold'] ) ); ?>
 				<tr>
 					<td>
 						<input
 							type="text"
 							name="<?php echo esc_attr( AUTO_LINKER_OPTION_TERMS ); ?>[<?php echo esc_attr( (string) $index ); ?>][term]"
 							value="<?php echo esc_attr( $term['term'] ); ?>"
-							class="regular-text"
+							class="regular-text auto-linker-term-field"
 							placeholder="<?php esc_attr_e( 'Playground', 'autolink-text' ); ?>"
+							<?php if ( '' !== $term_style ) : ?>
+								style="<?php echo esc_attr( $term_style ); ?>"
+							<?php endif; ?>
 						/>
 					</td>
 					<td>
@@ -184,7 +229,7 @@ function auto_linker_render_terms_field(): void {
 							type="text"
 							name="<?php echo esc_attr( AUTO_LINKER_OPTION_TERMS ); ?>[<?php echo esc_attr( (string) $index ); ?>][color]"
 							value="<?php echo esc_attr( $term['color'] ?? '' ); ?>"
-							class="auto-linker-color-field"
+							class="auto-linker-color-field auto-linker-text-color-field"
 							placeholder="<?php esc_attr_e( '#d63638', 'autolink-text' ); ?>"
 							data-default-color=""
 						/>
@@ -194,7 +239,7 @@ function auto_linker_render_terms_field(): void {
 							type="text"
 							name="<?php echo esc_attr( AUTO_LINKER_OPTION_TERMS ); ?>[<?php echo esc_attr( (string) $index ); ?>][bg_color]"
 							value="<?php echo esc_attr( $term['bg_color'] ?? '' ); ?>"
-							class="auto-linker-color-field"
+							class="auto-linker-color-field auto-linker-bg-color-field"
 							placeholder="<?php esc_attr_e( '#f6f7f7', 'autolink-text' ); ?>"
 							data-default-color=""
 						/>
@@ -205,6 +250,7 @@ function auto_linker_render_terms_field(): void {
 								type="checkbox"
 								name="<?php echo esc_attr( AUTO_LINKER_OPTION_TERMS ); ?>[<?php echo esc_attr( (string) $index ); ?>][bold]"
 								value="1"
+								class="auto-linker-bold-field"
 								<?php checked( ! empty( $term['bold'] ) ); ?>
 							/>
 							<?php esc_html_e( 'Bold', 'autolink-text' ); ?>
