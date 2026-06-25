@@ -1021,24 +1021,6 @@ function auto_linker_ydoc_find_first_link_candidate( \Yjs\YDoc $doc ): ?array {
 }
 
 /**
- * Finds a linkable match for a YDoc text candidate.
- *
- * @param array{text:string,path?:string,match_mode?:string} $candidate Candidate metadata.
- * @return array{term:string,url:string,color:string,bg_color:string,bold:bool,matched_text:string,start:int,length:int,replacement:string,opening_text:string,closing_text:string}|null
- */
-function auto_linker_ydoc_candidate_match( array $candidate ): ?array {
-	$text       = (string) ( $candidate['text'] ?? '' );
-	$match_mode = (string) ( $candidate['match_mode'] ?? '' );
-	if ( '' === $match_mode && str_contains( $text, '<!-- wp:' ) && str_contains( $text, '<p' ) ) {
-		$match_mode = 'serialized_paragraph_html';
-	}
-
-	return 'serialized_paragraph_html' === $match_mode
-		? auto_linker_find_first_serialized_paragraph_term( $text, auto_linker_get_terms() )
-		: auto_linker_find_first_unlinked_term( $text, auto_linker_get_terms() );
-}
-
-/**
  * Collects paragraph nested Y.Text handles from the materialized Gutenberg YDoc.
  *
  * @return array<int,array{text_type:\Yjs\YNestedText,text:string,path:string,match_mode?:string}>
@@ -1438,4 +1420,3 @@ function auto_linker_log( string $event, $data ): void {
 
 	error_log( $message ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
 }
-

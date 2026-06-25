@@ -52,11 +52,14 @@ add_filter( 'rest_post_dispatch', 'auto_linker_respond_to_wp_sync_requests', 10,
  * 4. It decides where to edit: it prefers the paragraph where the collaborator
  *    is currently typing, and falls back to scanning the document for the newest
  *    paragraph with a configured term.
- * 5. When a term can be linked, auto_linker_ydoc_apply_link_candidate() inserts
+ * 5. auto_linker_ydoc_candidate_match() checks whether that YDoc text candidate
+ *    still has a configured, unlinked term, including serialized paragraph
+ *    HTML fallbacks.
+ * 6. When a term can be linked, auto_linker_ydoc_apply_link_candidate() inserts
  *    the opening and closing anchor text into the YDoc, sends that bot-authored
  *    update back to /wp-sync/v1/updates, and briefly selects the linked term as
  *    the bot.
- * 6. auto_linker_ydoc_handle_room_updates() saves the new YDoc state, and
+ * 7. auto_linker_ydoc_handle_room_updates() saves the new YDoc state, and
  *    auto_linker_append_bot_update_to_response() also adds the bot-authored
  *    update to the current REST response so the active editor sees it right
  *    away.
@@ -174,7 +177,7 @@ function auto_linker_respond_to_wp_sync_requests( $response, WP_REST_Server $ser
  * Rebuilds one post room's YDoc, lets the bot make at most one link edit, and
  * saves the new state.
  *
- * See steps 3 and 6 above.
+ * See steps 3 and 7 above.
  *
  * @param array<int,array<string,mixed>> $updates      Incoming sync updates.
  * @param array<string,mixed>            $room_request Current sync room request.
@@ -306,10 +309,28 @@ function auto_linker_ydoc_emit_first_link( int $post_id, string $room, \Yjs\YDoc
 }
 
 /**
+ * Finds a linkable match for a YDoc text candidate.
+ *
+ * @param array{text:string,path?:string,match_mode?:string} $candidate Candidate metadata.
+ * @return array{term:string,url:string,color:string,bg_color:string,bold:bool,matched_text:string,start:int,length:int,replacement:string,opening_text:string,closing_text:string}|null
+ */
+function auto_linker_ydoc_candidate_match( array $candidate ): ?array {
+	$text       = (string) ( $candidate['text'] ?? '' );
+	$match_mode = (string) ( $candidate['match_mode'] ?? '' );
+	if ( '' === $match_mode && str_contains( $text, '<!-- wp:' ) && str_contains( $text, '<p' ) ) {
+		$match_mode = 'serialized_paragraph_html';
+	}
+
+	return 'serialized_paragraph_html' === $match_mode
+		? auto_linker_find_first_serialized_paragraph_term( $text, auto_linker_get_terms() )
+		: auto_linker_find_first_unlinked_term( $text, auto_linker_get_terms() );
+}
+
+/**
  * Inserts anchor markup into the YDoc and posts that bot-authored update back to
  * Gutenberg sync.
  *
- * See step 5 above.
+ * See step 6 above.
  *
  * @param array{text_type:\Yjs\YNestedText,text:string,path:string,match_mode?:string} $candidate Link candidate.
  * @return array<string,mixed>|null
@@ -433,7 +454,7 @@ function auto_linker_ydoc_apply_link_candidate( int $post_id, string $room, \Yjs
  * Adds the bot-authored YDoc update to the current REST response for the active
  * editor.
  *
- * See step 6 above.
+ * See step 7 above.
  *
  * @param WP_REST_Response|WP_HTTP_Response|WP_Error|mixed $response Response.
  * @param array<string, mixed>                             $bot_update Bot update metadata.
