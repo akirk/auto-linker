@@ -10,6 +10,10 @@ function register_setting( ...$args ): void {}
 function add_settings_section( ...$args ): void {}
 function add_settings_field( ...$args ): void {}
 function add_options_page( ...$args ): void {}
+function wp_enqueue_style( ...$args ): void {}
+function wp_enqueue_script( ...$args ): void {}
+function wp_add_inline_style( ...$args ): void {}
+function wp_add_inline_script( ...$args ): void {}
 function __( string $text, string $domain = 'default' ): string {
 	return $text;
 }
@@ -21,6 +25,14 @@ function esc_attr_e( string $text, string $domain = 'default' ): void {
 }
 function esc_html_e( string $text, string $domain = 'default' ): void {
 	echo $text;
+}
+function checked( mixed $checked, mixed $current = true, bool $display = true ): string {
+	$result = (string) $checked === (string) $current ? 'checked="checked"' : '';
+	if ( $display ) {
+		echo $result;
+	}
+
+	return $result;
 }
 function esc_attr( string $text ): string {
 	return htmlspecialchars( $text, ENT_QUOTES, 'UTF-8' );
@@ -47,7 +59,7 @@ function wp_json_encode( mixed $value, int $flags = 0, int $depth = 512 ): strin
 	return json_encode( $value, $flags, $depth );
 }
 
-require_once dirname( __DIR__ ) . '/auto-linker.php';
+require_once dirname( __DIR__ ) . '/autolink-text.php';
 
 function auto_linker_test_assert( bool $condition, string $message ): void {
 	if ( ! $condition ) {
@@ -60,6 +72,18 @@ function auto_linker_test_terms(): array {
 		array(
 			'term' => 'Playground',
 			'url'  => 'https://playground.wordpress.net/',
+		),
+	);
+}
+
+function auto_linker_test_styled_terms(): array {
+	return array(
+		array(
+			'term'  => 'Playground',
+			'url'   => 'https://playground.wordpress.net/',
+			'color' => '#D63638',
+			'bg_color' => '#F6F7F7',
+			'bold'  => true,
 		),
 	);
 }
@@ -154,6 +178,50 @@ $tests = array(
 		$match = auto_linker_find_first_unlinked_term( 'wordplayground highlighted', auto_linker_test_terms() );
 
 		auto_linker_test_assert( null === $match, 'Expected wordplayground not to match Playground.' );
+	},
+
+	'builds plain links without style settings' => static function (): void {
+		$match = auto_linker_find_first_unlinked_term( 'Hello Playground!', auto_linker_test_terms() );
+
+		auto_linker_test_assert( is_array( $match ), 'Expected Playground to match.' );
+		auto_linker_test_assert( '<a href="https://playground.wordpress.net/">Playground</a>' === $match['replacement'], 'Expected unchanged plain anchor markup.' );
+		auto_linker_test_assert( '<a href="https://playground.wordpress.net/">' === $match['opening_text'], 'Expected unchanged plain opening anchor markup.' );
+	},
+
+	'builds styled links from term settings' => static function (): void {
+		$match = auto_linker_find_first_unlinked_term( 'Hello Playground!', auto_linker_test_styled_terms() );
+
+		auto_linker_test_assert( is_array( $match ), 'Expected styled Playground to match.' );
+		auto_linker_test_assert( '<a href="https://playground.wordpress.net/" style="color: #d63638; background-color: #f6f7f7; font-weight: 700;">Playground</a>' === $match['replacement'], 'Expected color, background color, and bold styles on replacement anchor.' );
+		auto_linker_test_assert( '<a href="https://playground.wordpress.net/" style="color: #d63638; background-color: #f6f7f7; font-weight: 700;">' === $match['opening_text'], 'Expected color, background color, and bold styles on opening anchor.' );
+	},
+
+	'sanitizes configured link styles' => static function (): void {
+		$terms = auto_linker_sanitize_terms(
+			array(
+				array(
+					'term'  => 'Playground',
+					'url'   => 'https://playground.wordpress.net/',
+					'color' => 'not-css; color: red',
+					'bg_color' => 'also-not-css',
+					'bold'  => '1',
+				),
+				array(
+					'term'  => 'WordPress',
+					'url'   => 'https://wordpress.org/',
+					'color' => '3858e9',
+					'bg_color' => '#f6f7f7',
+					'bold'  => '',
+				),
+			)
+		);
+
+		auto_linker_test_assert( '' === $terms[0]['color'], 'Expected invalid color to be dropped.' );
+		auto_linker_test_assert( '' === $terms[0]['bg_color'], 'Expected invalid background color to be dropped.' );
+		auto_linker_test_assert( true === $terms[0]['bold'], 'Expected truthy bold setting to be preserved.' );
+		auto_linker_test_assert( '#3858e9' === $terms[1]['color'], 'Expected hex color without leading hash to be normalized.' );
+		auto_linker_test_assert( '#f6f7f7' === $terms[1]['bg_color'], 'Expected background color to be preserved.' );
+		auto_linker_test_assert( false === $terms[1]['bold'], 'Expected empty bold setting to become false.' );
 	},
 
 	'applies compaction room entries as yjs updates' => static function (): void {

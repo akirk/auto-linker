@@ -1,11 +1,11 @@
 <?php
 /**
- * Plugin Name: Auto Linker
- * Description: Automatically links configured terms in completed Gutenberg paragraphs through a PHP-only Gutenberg RTC bot.
+ * Plugin Name: Autolink Text
+ * Description: Automatically links and styles configured terms in completed Gutenberg paragraphs through a PHP-only Gutenberg RTC bot.
  * Version: 0.1.0
  * Requires Plugins: gutenberg
  * Author: Alex Kirk
- * Text Domain: auto-linker
+ * Text Domain: autolink-text
  *
  * @package Auto_Linker
  */
@@ -27,11 +27,12 @@ require_once __DIR__ . '/includes/gutenberg-rtc-debug-log.php';
 
 add_action( 'admin_init', 'auto_linker_register_settings' );
 add_action( 'admin_menu', 'auto_linker_register_settings_page' );
+add_action( 'admin_enqueue_scripts', 'auto_linker_enqueue_settings_assets' );
 add_filter( 'rest_pre_dispatch', 'auto_linker_log_wp_sync_requests', 10, 3 );
 add_filter( 'rest_post_dispatch', 'auto_linker_respond_to_wp_sync_requests', 10, 3 );
 
 /**
- * Registers Auto Linker settings.
+ * Registers Autolink Text settings.
  */
 function auto_linker_register_settings(): void {
 	register_setting(
@@ -56,14 +57,14 @@ function auto_linker_register_settings(): void {
 
 	add_settings_section(
 		'auto_linker_bot_section',
-		__( 'Bot identity', 'auto-linker' ),
+		__( 'Bot identity', 'autolink-text' ),
 		'__return_null',
 		'auto_linker'
 	);
 
 	add_settings_field(
 		AUTO_LINKER_OPTION_BOT_USER_ID,
-		__( 'Bot user', 'auto-linker' ),
+		__( 'Bot user', 'autolink-text' ),
 		'auto_linker_render_bot_user_field',
 		'auto_linker',
 		'auto_linker_bot_section'
@@ -71,14 +72,14 @@ function auto_linker_register_settings(): void {
 
 	add_settings_section(
 		'auto_linker_terms_section',
-		__( 'Terms', 'auto-linker' ),
+		__( 'Terms', 'autolink-text' ),
 		'__return_null',
 		'auto_linker'
 	);
 
 	add_settings_field(
 		AUTO_LINKER_OPTION_TERMS,
-		__( 'Linked terms', 'auto-linker' ),
+		__( 'Linked terms', 'autolink-text' ),
 		'auto_linker_render_terms_field',
 		'auto_linker',
 		'auto_linker_terms_section'
@@ -90,11 +91,72 @@ function auto_linker_register_settings(): void {
  */
 function auto_linker_register_settings_page(): void {
 	add_options_page(
-		__( 'Auto Linker', 'auto-linker' ),
-		__( 'Auto Linker', 'auto-linker' ),
+		__( 'Autolink Text', 'autolink-text' ),
+		__( 'Autolink Text', 'autolink-text' ),
 		'manage_options',
-		'auto-linker',
+		'autolink-text',
 		'auto_linker_render_settings_page'
+	);
+}
+
+/**
+ * Enqueues settings page assets.
+ */
+function auto_linker_enqueue_settings_assets( string $hook_suffix ): void {
+	if ( 'settings_page_autolink-text' !== $hook_suffix ) {
+		return;
+	}
+
+	wp_enqueue_style( 'wp-color-picker' );
+	wp_enqueue_script( 'wp-color-picker' );
+	wp_add_inline_style(
+		'wp-color-picker',
+		'.settings_page_autolink-text .form-table th { padding-left: 10px; }'
+	);
+	wp_add_inline_script(
+		'wp-color-picker',
+		'jQuery( function( $ ) {
+			function updatePreview( $row ) {
+				var color = $row.find( ".auto-linker-text-color-field" ).val();
+				var backgroundColor = $row.find( ".auto-linker-bg-color-field" ).val();
+				var isBold = $row.find( ".auto-linker-bold-field" ).is( ":checked" );
+				var $term = $row.find( ".auto-linker-term-field" );
+
+				$term.css( {
+					color: color || "",
+					backgroundColor: backgroundColor || "",
+					fontWeight: isBold ? "700" : ""
+				} );
+			}
+
+			$( ".auto-linker-color-field" ).wpColorPicker( {
+				change: function( event, ui ) {
+					var $field = $( event.target );
+					window.setTimeout( function() {
+						$field.val( ui.color ? ui.color.toString() : "" );
+						updatePreview( $field.closest( "tr" ) );
+					}, 0 );
+				},
+				clear: function( event ) {
+					var $field = $( event.target );
+					window.setTimeout( function() {
+						updatePreview( $field.closest( "tr" ) );
+					}, 0 );
+				}
+			} );
+
+			$( ".auto-linker-color-field" ).on( "input change", function() {
+				updatePreview( $( this ).closest( "tr" ) );
+			} );
+
+			$( ".auto-linker-bold-field" ).on( "change", function() {
+				updatePreview( $( this ).closest( "tr" ) );
+			} );
+
+			$( ".auto-linker-term-field" ).closest( "tr" ).each( function() {
+				updatePreview( $( this ) );
+			} );
+		} );'
 	);
 }
 
@@ -107,7 +169,7 @@ function auto_linker_render_bot_user_field(): void {
 			'name'              => AUTO_LINKER_OPTION_BOT_USER_ID,
 			'id'                => AUTO_LINKER_OPTION_BOT_USER_ID,
 			'selected'          => auto_linker_get_bot_user_id(),
-			'show_option_none'  => __( 'Select a user', 'auto-linker' ),
+			'show_option_none'  => __( 'Select a user', 'autolink-text' ),
 			'option_none_value' => 0,
 			'role__in'          => array( 'administrator', 'editor', 'author', 'contributor' ),
 		)
@@ -120,27 +182,37 @@ function auto_linker_render_bot_user_field(): void {
 function auto_linker_render_terms_field(): void {
 	$terms = auto_linker_get_terms();
 	$terms[] = array(
-		'term' => '',
-		'url'  => '',
+		'term'     => '',
+		'url'      => '',
+		'color'    => '',
+		'bg_color' => '',
+		'bold'     => false,
 	);
 	?>
-	<table class="widefat striped" style="max-width: 900px;">
+	<table class="widefat striped" style="max-width: 1200px;">
 		<thead>
 			<tr>
-				<th scope="col"><?php esc_html_e( 'Term', 'auto-linker' ); ?></th>
-				<th scope="col"><?php esc_html_e( 'URL', 'auto-linker' ); ?></th>
+				<th scope="col"><?php esc_html_e( 'Term', 'autolink-text' ); ?></th>
+				<th scope="col"><?php esc_html_e( 'URL', 'autolink-text' ); ?></th>
+				<th scope="col"><?php esc_html_e( 'Color', 'autolink-text' ); ?></th>
+				<th scope="col"><?php esc_html_e( 'Background', 'autolink-text' ); ?></th>
+				<th scope="col"><?php esc_html_e( 'Bold', 'autolink-text' ); ?></th>
 			</tr>
 		</thead>
 		<tbody>
 			<?php foreach ( $terms as $index => $term ) : ?>
+				<?php $term_style = auto_linker_build_link_style( (string) ( $term['color'] ?? '' ), (string) ( $term['bg_color'] ?? '' ), ! empty( $term['bold'] ) ); ?>
 				<tr>
 					<td>
 						<input
 							type="text"
 							name="<?php echo esc_attr( AUTO_LINKER_OPTION_TERMS ); ?>[<?php echo esc_attr( (string) $index ); ?>][term]"
 							value="<?php echo esc_attr( $term['term'] ); ?>"
-							class="regular-text"
-							placeholder="<?php esc_attr_e( 'Playground', 'auto-linker' ); ?>"
+							class="regular-text auto-linker-term-field"
+							placeholder="<?php esc_attr_e( 'Playground', 'autolink-text' ); ?>"
+							<?php if ( '' !== $term_style ) : ?>
+								style="<?php echo esc_attr( $term_style ); ?>"
+							<?php endif; ?>
 						/>
 					</td>
 					<td>
@@ -149,14 +221,46 @@ function auto_linker_render_terms_field(): void {
 							name="<?php echo esc_attr( AUTO_LINKER_OPTION_TERMS ); ?>[<?php echo esc_attr( (string) $index ); ?>][url]"
 							value="<?php echo esc_attr( $term['url'] ); ?>"
 							class="large-text"
-							placeholder="<?php esc_attr_e( 'https://playground.wordpress.net/', 'auto-linker' ); ?>"
+							placeholder="<?php esc_attr_e( 'https://playground.wordpress.net/', 'autolink-text' ); ?>"
 						/>
+					</td>
+					<td>
+						<input
+							type="text"
+							name="<?php echo esc_attr( AUTO_LINKER_OPTION_TERMS ); ?>[<?php echo esc_attr( (string) $index ); ?>][color]"
+							value="<?php echo esc_attr( $term['color'] ?? '' ); ?>"
+							class="auto-linker-color-field auto-linker-text-color-field"
+							placeholder="<?php esc_attr_e( '#d63638', 'autolink-text' ); ?>"
+							data-default-color=""
+						/>
+					</td>
+					<td>
+						<input
+							type="text"
+							name="<?php echo esc_attr( AUTO_LINKER_OPTION_TERMS ); ?>[<?php echo esc_attr( (string) $index ); ?>][bg_color]"
+							value="<?php echo esc_attr( $term['bg_color'] ?? '' ); ?>"
+							class="auto-linker-color-field auto-linker-bg-color-field"
+							placeholder="<?php esc_attr_e( '#f6f7f7', 'autolink-text' ); ?>"
+							data-default-color=""
+						/>
+					</td>
+					<td>
+						<label>
+							<input
+								type="checkbox"
+								name="<?php echo esc_attr( AUTO_LINKER_OPTION_TERMS ); ?>[<?php echo esc_attr( (string) $index ); ?>][bold]"
+								value="1"
+								class="auto-linker-bold-field"
+								<?php checked( ! empty( $term['bold'] ) ); ?>
+							/>
+							<?php esc_html_e( 'Bold', 'autolink-text' ); ?>
+						</label>
 					</td>
 				</tr>
 			<?php endforeach; ?>
 		</tbody>
 	</table>
-	<p class="description"><?php esc_html_e( 'Leave a row blank to ignore it. Save once to add another empty row.', 'auto-linker' ); ?></p>
+	<p class="description"><?php esc_html_e( 'Leave a row blank to ignore it. Save once to add another empty row.', 'autolink-text' ); ?></p>
 	<?php
 }
 
@@ -167,7 +271,7 @@ function auto_linker_render_settings_page(): void {
 	?>
 	<div class="wrap">
 		<h1><?php echo esc_html( get_admin_page_title() ); ?></h1>
-		<p><?php esc_html_e( 'Choose the WordPress user Auto Linker should use when emitting PHP-generated Gutenberg RTC updates, then configure the terms it should link.', 'auto-linker' ); ?></p>
+		<p><?php esc_html_e( 'Choose the WordPress user Autolink Text should use when emitting PHP-generated Gutenberg RTC updates, then configure the terms it should link.', 'autolink-text' ); ?></p>
 		<form method="post" action="options.php">
 			<?php
 			settings_fields( 'auto_linker' );
@@ -189,7 +293,7 @@ function auto_linker_get_bot_user_id(): int {
 /**
  * Gets the configured terms.
  *
- * @return array<int,array{term:string,url:string}>
+ * @return array<int,array{term:string,url:string,color:string,bg_color:string,bold:bool}>
  */
 function auto_linker_get_terms(): array {
 	return auto_linker_sanitize_terms( get_option( AUTO_LINKER_OPTION_TERMS, auto_linker_default_terms() ) );
@@ -198,13 +302,16 @@ function auto_linker_get_terms(): array {
 /**
  * Gets the default linked terms.
  *
- * @return array<int,array{term:string,url:string}>
+ * @return array<int,array{term:string,url:string,color:string,bg_color:string,bold:bool}>
  */
 function auto_linker_default_terms(): array {
 	return array(
 		array(
-			'term' => 'Playground',
-			'url'  => 'https://playground.wordpress.net/',
+			'term'     => 'Playground',
+			'url'      => 'https://playground.wordpress.net/',
+			'color'    => '',
+			'bg_color' => '',
+			'bold'     => false,
 		),
 	);
 }
@@ -213,7 +320,7 @@ function auto_linker_default_terms(): array {
  * Sanitizes term settings.
  *
  * @param mixed $value Posted option value.
- * @return array<int,array{term:string,url:string}>
+ * @return array<int,array{term:string,url:string,color:string,bg_color:string,bold:bool}>
  */
 function auto_linker_sanitize_terms( $value ): array {
 	$rows = is_string( $value ) ? auto_linker_parse_terms_text( $value ) : $value;
@@ -227,19 +334,41 @@ function auto_linker_sanitize_terms( $value ): array {
 			continue;
 		}
 
-		$term = isset( $row['term'] ) ? sanitize_text_field( (string) $row['term'] ) : '';
-		$url  = isset( $row['url'] ) ? esc_url_raw( (string) $row['url'] ) : '';
+		$term     = isset( $row['term'] ) ? sanitize_text_field( (string) $row['term'] ) : '';
+		$url      = isset( $row['url'] ) ? esc_url_raw( (string) $row['url'] ) : '';
+		$color    = isset( $row['color'] ) ? auto_linker_sanitize_link_color( (string) $row['color'] ) : '';
+		$bg_color = isset( $row['bg_color'] ) ? auto_linker_sanitize_link_color( (string) $row['bg_color'] ) : '';
+		$bold     = ! empty( $row['bold'] );
 		if ( '' === $term || '' === $url ) {
 			continue;
 		}
 
 		$terms[] = array(
-			'term' => $term,
-			'url'  => $url,
+			'term'     => $term,
+			'url'      => $url,
+			'color'    => $color,
+			'bg_color' => $bg_color,
+			'bold'     => $bold,
 		);
 	}
 
 	return $terms ?: auto_linker_default_terms();
+}
+
+/**
+ * Sanitizes a configured link color.
+ */
+function auto_linker_sanitize_link_color( string $color ): string {
+	$color = trim( $color );
+	if ( '' === $color ) {
+		return '';
+	}
+
+	if ( '#' !== $color[0] ) {
+		$color = '#' . $color;
+	}
+
+	return preg_match( '/^#(?:[a-f0-9]{3}|[a-f0-9]{6})$/i', $color ) ? strtolower( $color ) : '';
 }
 
 /**
@@ -270,7 +399,7 @@ function auto_linker_parse_terms_text( string $text ): array {
 }
 
 /**
- * Gets the stable RTC client ID used by Auto Linker for a bot user.
+ * Gets the stable RTC client ID used by Autolink Text for a bot user.
  */
 function auto_linker_get_bot_client_id( int $bot_user_id ): int {
 	return abs( crc32( 'auto-linker-bot-' . $bot_user_id ) );
@@ -283,17 +412,17 @@ function auto_linker_get_bot_client_id( int $bot_user_id ): int {
  */
 function auto_linker_emit_bot_awareness( int $post_id, string $room, string $changed_text ) {
 	if ( ! $post_id || '' === $room ) {
-		return new WP_Error( 'auto_linker_missing_room', __( 'Missing Auto Linker room.', 'auto-linker' ) );
+		return new WP_Error( 'auto_linker_missing_room', __( 'Missing Autolink Text room.', 'autolink-text' ) );
 	}
 
 	$bot_user_id = auto_linker_get_bot_user_id();
 	if ( ! $bot_user_id ) {
-		return new WP_Error( 'auto_linker_missing_bot_user', __( 'No Auto Linker bot user is configured.', 'auto-linker' ) );
+		return new WP_Error( 'auto_linker_missing_bot_user', __( 'No Autolink Text bot user is configured.', 'autolink-text' ) );
 	}
 
 	$bot_user = get_user_by( 'id', $bot_user_id );
 	if ( ! $bot_user || ! user_can( $bot_user, 'edit_post', $post_id ) ) {
-		return new WP_Error( 'auto_linker_bot_cannot_edit', __( 'The configured Auto Linker bot user cannot edit this post.', 'auto-linker' ) );
+		return new WP_Error( 'auto_linker_bot_cannot_edit', __( 'The configured Autolink Text bot user cannot edit this post.', 'autolink-text' ) );
 	}
 
 	$previous_user_id = get_current_user_id();
@@ -331,17 +460,17 @@ function auto_linker_emit_bot_awareness( int $post_id, string $room, string $cha
  */
 function auto_linker_emit_bot_selection_awareness( int $post_id, string $room, string $changed_text, array $selection ) {
 	if ( ! $post_id || '' === $room ) {
-		return new WP_Error( 'auto_linker_missing_room', __( 'Missing Auto Linker room.', 'auto-linker' ) );
+		return new WP_Error( 'auto_linker_missing_room', __( 'Missing Autolink Text room.', 'autolink-text' ) );
 	}
 
 	$bot_user_id = auto_linker_get_bot_user_id();
 	if ( ! $bot_user_id ) {
-		return new WP_Error( 'auto_linker_missing_bot_user', __( 'No Auto Linker bot user is configured.', 'auto-linker' ) );
+		return new WP_Error( 'auto_linker_missing_bot_user', __( 'No Autolink Text bot user is configured.', 'autolink-text' ) );
 	}
 
 	$bot_user = get_user_by( 'id', $bot_user_id );
 	if ( ! $bot_user || ! user_can( $bot_user, 'edit_post', $post_id ) ) {
-		return new WP_Error( 'auto_linker_bot_cannot_edit', __( 'The configured Auto Linker bot user cannot edit this post.', 'auto-linker' ) );
+		return new WP_Error( 'auto_linker_bot_cannot_edit', __( 'The configured Autolink Text bot user cannot edit this post.', 'autolink-text' ) );
 	}
 
 	$previous_user_id = get_current_user_id();
@@ -1256,7 +1385,7 @@ function auto_linker_ydoc_find_first_link_candidate( \Yjs\YDoc $doc ): ?array {
  * Finds a linkable match for a YDoc text candidate.
  *
  * @param array{text:string,path?:string,match_mode?:string} $candidate Candidate metadata.
- * @return array{term:string,url:string,matched_text:string,start:int,length:int,replacement:string,opening_text:string,closing_text:string}|null
+ * @return array{term:string,url:string,color:string,bg_color:string,bold:bool,matched_text:string,start:int,length:int,replacement:string,opening_text:string,closing_text:string}|null
  */
 function auto_linker_ydoc_candidate_match( array $candidate ): ?array {
 	$text       = (string) ( $candidate['text'] ?? '' );
@@ -1433,8 +1562,8 @@ function auto_linker_append_bot_update_to_response( $response, string $room, arr
 /**
  * Finds the first configured term that is not already inside markup.
  *
- * @param array<int,array{term:string,url:string}> $terms Terms.
- * @return array{term:string,url:string,matched_text:string,start:int,length:int,replacement:string}|null
+ * @param array<int,array{term:string,url:string,color?:string,bg_color?:string,bold?:bool}> $terms Terms.
+ * @return array{term:string,url:string,color:string,bg_color:string,bold:bool,matched_text:string,start:int,length:int,replacement:string,opening_text:string,closing_text:string}|null
  */
 function auto_linker_find_first_unlinked_term( string $text, array $terms ): ?array {
 	if ( ! auto_linker_has_balanced_anchor_markup( $text ) ) {
@@ -1444,6 +1573,9 @@ function auto_linker_find_first_unlinked_term( string $text, array $terms ): ?ar
 	foreach ( $terms as $term ) {
 		$label = (string) ( $term['term'] ?? '' );
 		$url   = (string) ( $term['url'] ?? '' );
+		$color = auto_linker_sanitize_link_color( (string) ( $term['color'] ?? '' ) );
+		$bg_color = auto_linker_sanitize_link_color( (string) ( $term['bg_color'] ?? '' ) );
+		$bold  = ! empty( $term['bold'] );
 		if ( '' === $label || '' === $url ) {
 			continue;
 		}
@@ -1463,11 +1595,14 @@ function auto_linker_find_first_unlinked_term( string $text, array $terms ): ?ar
 			return array(
 				'term'         => $label,
 				'url'          => $url,
+				'color'        => $color,
+				'bg_color'     => $bg_color,
+				'bold'         => $bold,
 				'matched_text' => $matched_text,
 				'start'        => \Auto_Linker\Gutenberg_RTC\gutenberg_yjs_utf16_clock_len( substr( $text, 0, $byte_offset ) ),
 				'length'       => \Auto_Linker\Gutenberg_RTC\gutenberg_yjs_utf16_clock_len( $matched_text ),
-				'replacement'  => auto_linker_build_anchor_html( $matched_text, $url ),
-				'opening_text' => auto_linker_build_opening_anchor_html( $url ),
+				'replacement'  => auto_linker_build_anchor_html( $matched_text, $url, $color, $bg_color, $bold ),
+				'opening_text' => auto_linker_build_opening_anchor_html( $url, $color, $bg_color, $bold ),
 				'closing_text' => '</a>',
 			);
 		}
@@ -1479,8 +1614,8 @@ function auto_linker_find_first_unlinked_term( string $text, array $terms ): ?ar
 /**
  * Finds a configured term inside serialized paragraph HTML.
  *
- * @param array<int,array{term:string,url:string}> $terms Terms.
- * @return array{term:string,url:string,matched_text:string,start:int,length:int,replacement:string,opening_text:string,closing_text:string}|null
+ * @param array<int,array{term:string,url:string,color?:string,bg_color?:string,bold?:bool}> $terms Terms.
+ * @return array{term:string,url:string,color:string,bg_color:string,bold:bool,matched_text:string,start:int,length:int,replacement:string,opening_text:string,closing_text:string}|null
  */
 function auto_linker_find_first_serialized_paragraph_term( string $text, array $terms ): ?array {
 	if ( ! preg_match_all( '/<p\b[^>]*>(.*?)<\/p>/is', $text, $paragraphs, PREG_OFFSET_CAPTURE ) ) {
@@ -1536,15 +1671,40 @@ function auto_linker_offset_is_inside_markup( string $text, int $byte_offset ): 
 /**
  * Builds the anchor markup inserted into paragraph content.
  */
-function auto_linker_build_anchor_html( string $label, string $url ): string {
-	return '<a href="' . esc_url( $url ) . '">' . esc_html( $label ) . '</a>';
+function auto_linker_build_anchor_html( string $label, string $url, string $color = '', string $bg_color = '', bool $bold = false ): string {
+	return auto_linker_build_opening_anchor_html( $url, $color, $bg_color, $bold ) . esc_html( $label ) . '</a>';
 }
 
 /**
  * Builds the opening anchor tag inserted before linked text.
  */
-function auto_linker_build_opening_anchor_html( string $url ): string {
-	return '<a href="' . esc_url( $url ) . '">';
+function auto_linker_build_opening_anchor_html( string $url, string $color = '', string $bg_color = '', bool $bold = false ): string {
+	$style = auto_linker_build_link_style( $color, $bg_color, $bold );
+
+	return '<a href="' . esc_url( $url ) . '"' . ( '' === $style ? '' : ' style="' . esc_attr( $style ) . '"' ) . '>';
+}
+
+/**
+ * Builds a constrained inline style string for generated links.
+ */
+function auto_linker_build_link_style( string $color, string $bg_color, bool $bold ): string {
+	$styles   = array();
+	$color    = auto_linker_sanitize_link_color( $color );
+	$bg_color = auto_linker_sanitize_link_color( $bg_color );
+
+	if ( '' !== $color ) {
+		$styles[] = 'color: ' . $color . ';';
+	}
+
+	if ( '' !== $bg_color ) {
+		$styles[] = 'background-color: ' . $bg_color . ';';
+	}
+
+	if ( $bold ) {
+		$styles[] = 'font-weight: 700;';
+	}
+
+	return implode( ' ', $styles );
 }
 
 /**
@@ -1600,7 +1760,7 @@ function auto_linker_build_bot_awareness_state( WP_User $bot_user, int $post_id,
 function auto_linker_build_collaborator_info( WP_User $bot_user ): array {
 	return array(
 		'avatar_urls' => rest_get_avatar_urls( $bot_user->user_email ),
-		'browserType' => 'Auto Linker',
+		'browserType' => 'Autolink Text',
 		'enteredAt'   => (int) floor( microtime( true ) * 1000 ),
 		'id'          => $bot_user->ID,
 		'name'        => $bot_user->display_name,
@@ -1644,7 +1804,7 @@ function auto_linker_get_post_id_from_room( string $room ): int {
 }
 
 /**
- * Gets Auto Linker's lightweight CRDT room state.
+ * Gets Autolink Text's lightweight CRDT room state.
  *
  * @return array<string, mixed>
  */
@@ -1670,7 +1830,7 @@ function auto_linker_get_room_state( int $post_id ): array {
 }
 
 /**
- * Stores Auto Linker's lightweight CRDT room state.
+ * Stores Autolink Text's lightweight CRDT room state.
  */
 function auto_linker_set_room_state( int $post_id, array $state ): void {
 	update_post_meta( $post_id, AUTO_LINKER_ROOM_STATE_META_KEY, $state );
@@ -1683,7 +1843,7 @@ function auto_linker_set_room_state( int $post_id, array $state ): void {
  * @param mixed  $data  Event payload.
  */
 function auto_linker_log( string $event, $data ): void {
-	$message = '[Auto Linker] ' . gmdate( 'c' ) . ' ' . $event . ' ' . wp_json_encode( $data, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE );
+	$message = '[Autolink Text] ' . gmdate( 'c' ) . ' ' . $event . ' ' . wp_json_encode( $data, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE );
 
 	error_log( $message ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
 }
